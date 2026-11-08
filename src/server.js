@@ -170,6 +170,7 @@ app.get(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], (req, res) => {
     queryKeys: Object.keys(req.query || {}).sort(),
     originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
     ...diagnoseProxySignature(req, config.shopifyApiSecret),
+    fashnKeyLength: (config.fashnApiKey || '').length,
   });
 });
 

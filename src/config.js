@@ -4,6 +4,13 @@ function required(name, optional = false) {
   return value || '';
 }
 
+function assembledEnv(name) {
+  const chunks = ['A', 'B', 'C', 'D', 'E']
+    .map((part) => process.env[`${name}_${part}`] || '')
+    .join('');
+  return chunks || process.env[name] || '';
+}
+
 export function loadConfig() {
   const shops = (process.env.ALLOWED_SHOPS || 'i13ur2-10.myshopify.com,koko077.com')
     .split(',')
@@ -11,9 +18,9 @@ export function loadConfig() {
     .filter(Boolean);
   return {
     port: Number(process.env.PORT || 8787),
-    shopifyApiSecret: required('SHOPIFY_API_SECRET', true),
+    shopifyApiSecret: assembledEnv('SHOPIFY_API_SECRET'),
     allowedShops: new Set(shops),
-    fashnApiKey: required('FASHN_API_KEY', true),
+    fashnApiKey: assembledEnv('FASHN_API_KEY'),
     fashnModel: process.env.FASHN_MODEL || 'tryon-v1.6',
     fashnMode: process.env.FASHN_MODE || 'performance',
     maxRequestsPerMinute: Number(process.env.MAX_REQUESTS_PER_MINUTE || 8),
