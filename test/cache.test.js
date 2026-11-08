@@ -58,3 +58,16 @@ test('read/write hit and miss without FASHN', () => {
   fs.unlinkSync(file);
   assert.equal(readCached(key), null);
 });
+
+test('cacheKey includes bottom image so outfits do not reuse top-only cache', () => {
+  const model = 'https://cdn.shopify.com/s/files/1/model.jpg';
+  const garment = 'https://cdn.shopify.com/s/files/1/garment.jpg';
+  const bottom = 'https://cdn.shopify.com/s/files/1/pants.jpg';
+  const topOnly = cacheKey(garment, model);
+  assert.equal(topOnly, cacheKey(garment, model, ''));
+  assert.equal(topOnly, cacheKey(garment, model, undefined));
+  const outfit = cacheKey(garment, model, bottom);
+  assert.notEqual(topOnly, outfit);
+  assert.equal(outfit, cacheKey(garment, model, `${bottom}?width=1600`));
+  assert.notEqual(outfit, cacheKey(garment, model, 'https://cdn.shopify.com/s/files/1/other-pants.jpg'));
+});

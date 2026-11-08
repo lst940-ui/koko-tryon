@@ -10,6 +10,7 @@ import {
   downloadResultImage,
   ensureCacheDir,
   isValidCacheKey,
+  normalizeImageUrl,
   readCached,
   writeCached,
 } from './cache.js';
@@ -93,6 +94,7 @@ async function handleTryOn(req, res) {
     const productImage = body.productImage;
     const modelImage = body.modelImage;
     const shopperImage = body.shopperImage;
+    const bottomImage = body.bottomImage;
     const lookupOnly = body.lookupOnly === true;
 
     if (!productImage || typeof productImage !== 'string') return jsonError(res, 400, 'product_image_required');
@@ -100,12 +102,16 @@ async function handleTryOn(req, res) {
     if (modelImage && shopperImage) return jsonError(res, 400, 'choose_one_person_image');
     if (lookupOnly && shopperImage) return jsonError(res, 400, 'lookup_virtual_only');
     if (lookupOnly && !modelImage) return jsonError(res, 400, 'lookup_virtual_only');
+    if (bottomImage != null && bottomImage !== '' && typeof bottomImage !== 'string') {
+      return jsonError(res, 400, 'invalid_image_url');
+    }
+    const outfitBottom = bottomImage || '';
 
-    // Virtual-model cache: keyed by garment + fixed model URLs. Never used for Your photo.
+    // Virtual-model cache: keyed by garment + fixed model (+ optional bottom) URLs. Never used for Your photo.
     if (modelImage && !shopperImage) {
       let key;
       try {
-        key = cacheKey(productImage, modelImage);
+        key = cacheKey(productImage, modelImage, outfitBottom);
       } catch {
         return jsonError(res, 400, 'invalid_image_url');
       }
@@ -129,6 +135,12 @@ async function handleTryOn(req, res) {
     }
 
     const garment = await fetchAndValidateRemoteImage(productImage, config.allowedCdnHosts);
+    let bottomsGarment = null;
+    if (outfitBottom) {
+      bottomsGarment = normalizeImageUrl(outfitBottom) === normalizeImageUrl(productImage)
+        ? garment
+        : await fetchAndValidateRemoteImage(outfitBottom, config.allowedCdnHosts);
+    }
     let person;
     if (shopperImage) {
       person = await validateDataUrlImage(shopperImage);
@@ -136,24 +148,55 @@ async function handleTryOn(req, res) {
       person = await fetchAndValidateRemoteImage(modelImage, config.allowedCdnHosts);
     }
 
-    const result = await runTryOn({
+    const resultTops = await runTryOn({
       apiKey: config.fashnApiKey,
       modelImage: person,
       garmentImage: garment,
+      category: 'tops',
       modelName: config.fashnModel,
       mode: config.fashnMode,
       timeoutMs: config.requestTimeoutMs,
     });
 
+    let result = resultTops;
+    let outfitComplete = !bottomsGarment;
+    if (bottomsGarment) {
+      try {
+        // Second pass uses the first FASHN result URL directly (not a Shopify CDN fetch).
+        result = await runTryOn({
+          apiKey: config.fashnApiKey,
+          modelImage: resultTops.imageUrl,
+          garmentImage: bottomsGarment,
+          category: 'bottoms',
+          modelName: config.fashnModel,
+          mode: config.fashnMode,
+          timeoutMs: config.requestTimeoutMs,
+        });
+        outfitComplete = true;
+      } catch (error) {
+        console.log(JSON.stringify({
+          event: 'tryon_bottoms_failed',
+          code: error?.message || 'bottoms_failed',
+        }));
+        result = resultTops;
+      }
+    }
+
     // Persist Virtual-model results locally so later visitors skip FASHN (and CDN expiry).
+    // If bottoms failed after a successful top, return the top look without caching so a later Generate can retry pants.
     if (modelImage && !shopperImage) {
-      const key = cacheKey(productImage, modelImage);
       const downloaded = await downloadResultImage(result.imageUrl);
-      writeCached(key, downloaded.buffer);
-      console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored' }));
+      const imageDataUrl = `data:${downloaded.contentType};base64,${downloaded.buffer.toString('base64')}`;
+      if (outfitComplete) {
+        const key = cacheKey(productImage, modelImage, outfitBottom);
+        writeCached(key, downloaded.buffer);
+        console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored', outfit: Boolean(outfitBottom) }));
+      } else {
+        console.log(JSON.stringify({ event: 'tryon_cache', result: 'skipped_incomplete_outfit' }));
+      }
       return res.status(200).json({
         imageUrl: result.imageUrl,
-        imageDataUrl: `data:${downloaded.contentType};base64,${downloaded.buffer.toString('base64')}`,
+        imageDataUrl,
         cached: false,
       });
     }

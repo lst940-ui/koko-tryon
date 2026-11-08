@@ -8,10 +8,15 @@ function authHeaders(apiKey) {
   };
 }
 
+export function resolveCategory(category) {
+  return category === 'bottoms' ? 'bottoms' : 'tops';
+}
+
 export async function runTryOn({
   apiKey,
   modelImage,
   garmentImage,
+  category = 'tops',
   modelName = 'tryon-v1.6',
   mode = 'performance',
   timeoutMs = 85_000,
@@ -26,7 +31,7 @@ export async function runTryOn({
       inputs: {
         model_image: modelImage,
         garment_image: garmentImage,
-        category: 'tops',
+        category: resolveCategory(category),
         garment_photo_type: 'auto',
         mode,
         num_samples: 1,

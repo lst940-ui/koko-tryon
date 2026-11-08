@@ -19,10 +19,12 @@ export function normalizeImageUrl(raw) {
   return `${url.protocol}//${url.host.toLowerCase()}${url.pathname}`;
 }
 
-export function cacheKey(productImageUrl, modelImageUrl) {
+export function cacheKey(productImageUrl, modelImageUrl, bottomImageUrl) {
   const garment = normalizeImageUrl(productImageUrl);
   const model = normalizeImageUrl(modelImageUrl);
-  return crypto.createHash('sha256').update(`${garment}\n${model}`).digest('hex');
+  const bottom = bottomImageUrl ? normalizeImageUrl(bottomImageUrl) : '';
+  const material = bottom ? `${garment}\n${model}\n${bottom}` : `${garment}\n${model}`;
+  return crypto.createHash('sha256').update(material).digest('hex');
 }
 
 export function isValidCacheKey(key) {
