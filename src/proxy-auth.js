@@ -40,6 +40,22 @@ export function verifyAppProxySignature(url, sharedSecret) {
   return { ok: true, shop, pathPrefix: params.get('path_prefix') || '' };
 }
 
+
+export function verifyAppProxyRequest(req, sharedSecret) {
+  const fromUrl = `${req?.protocol || 'https'}://${(typeof req?.get === 'function' && req.get('host')) || 'example.invalid'}${req?.originalUrl || req?.url || '/'}`;
+  const urlResult = verifyAppProxySignature(fromUrl, sharedSecret);
+  if (urlResult.reason !== 'missing_signature') return urlResult;
+
+  const query = req?.query;
+  if (!query || typeof query !== 'object') return urlResult;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (Array.isArray(value)) value.forEach((item) => params.append(key, String(item)));
+    else if (value !== undefined && value !== null) params.append(key, String(value));
+  }
+  return verifyAppProxySignature(`https://example.invalid/?${params.toString()}`, sharedSecret);
+}
+
 export function isAllowedShop(shop, allowedShops) {
   if (!shop) return false;
   const normalized = shop.toLowerCase();

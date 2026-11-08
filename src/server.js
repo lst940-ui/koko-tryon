@@ -1,6 +1,6 @@
 import express from 'express';
 import { loadConfig } from './config.js';
-import { verifyAppProxySignature, isAllowedShop } from './proxy-auth.js';
+import { verifyAppProxyRequest, isAllowedShop } from './proxy-auth.js';
 import { createRateLimiter } from './rate-limit.js';
 import { fetchAndValidateRemoteImage, validateDataUrlImage } from './images.js';
 import { runTryOn } from './fashn.js';
@@ -30,9 +30,17 @@ async function handleTryOn(req, res) {
     if (!config.shopifyApiSecret) return jsonError(res, 503, 'proxy_not_configured');
     if (!config.fashnApiKey) return jsonError(res, 503, 'fashn_not_configured');
 
-    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
-    const auth = verifyAppProxySignature(fullUrl, config.shopifyApiSecret);
-    if (!auth.ok) return jsonError(res, 401, 'invalid_proxy_signature');
+    const auth = verifyAppProxyRequest(req, config.shopifyApiSecret);
+    if (!auth.ok) {
+      console.log(JSON.stringify({
+        event: 'proxy_auth_failed',
+        reason: auth.reason,
+        hasSignature: Object.prototype.hasOwnProperty.call(req.query || {}, 'signature'),
+        queryKeys: Object.keys(req.query || {}).sort(),
+        originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
+      }));
+      return res.status(401).json({ error: 'invalid_proxy_signature', reason: auth.reason });
+    }
     if (!isAllowedShop(auth.shop, config.allowedShops)) return jsonError(res, 403, 'shop_not_allowed');
 
     const rate = limiter(clientKey(req));
@@ -94,6 +102,17 @@ app.get('/healthz', (_req, res) => {
 // Shopify app proxy forwards /apps/koko-tryon* to this path (relative or absolute).
 app.post(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], handleTryOn);
 app.all(['/apps/koko-tryon', '/apps/koko-tryon/'], (_req, res) => jsonError(res, 405, 'method_not_allowed'));
+
+app.get(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], (req, res) => {
+  res.status(404).json({
+    error: 'not_found',
+    hasSignature: Object.prototype.hasOwnProperty.call(req.query || {}, 'signature'),
+    queryKeys: Object.keys(req.query || {}).sort(),
+    originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
+  });
+});
+
+
 
 app.use((_req, res) => jsonError(res, 404, 'not_found'));
 
