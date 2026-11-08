@@ -4,6 +4,7 @@ import { verifyAppProxyRequest, isAllowedShop } from './proxy-auth.js';
 import { createRateLimiter } from './rate-limit.js';
 import { fetchAndValidateRemoteImage, validateDataUrlImage } from './images.js';
 import { runTryOn } from './fashn.js';
+import { runTryOnRequest } from './tryon-request.js';
 import {
   cacheKey,
   cachePublicPath,
@@ -83,82 +84,34 @@ async function handleTryOn(req, res) {
     if (!authorizeProxy(req, res)) return;
     if (!config.fashnApiKey) return jsonError(res, 503, 'fashn_not_configured');
 
+    // One client POST is one rate-limit hit, including a two-step outfit try-on.
     const rate = limiter(clientKey(req));
     if (!rate.ok) {
       res.set('Retry-After', String(Math.ceil(rate.retryAfterMs / 1000)));
       return jsonError(res, 429, 'rate_limited');
     }
 
-    const body = req.body || {};
-    const productImage = body.productImage;
-    const modelImage = body.modelImage;
-    const shopperImage = body.shopperImage;
-    const lookupOnly = body.lookupOnly === true;
-
-    if (!productImage || typeof productImage !== 'string') return jsonError(res, 400, 'product_image_required');
-    if (!modelImage && !shopperImage) return jsonError(res, 400, 'model_or_shopper_required');
-    if (modelImage && shopperImage) return jsonError(res, 400, 'choose_one_person_image');
-    if (lookupOnly && shopperImage) return jsonError(res, 400, 'lookup_virtual_only');
-    if (lookupOnly && !modelImage) return jsonError(res, 400, 'lookup_virtual_only');
-
-    // Virtual-model cache: keyed by garment + fixed model URLs. Never used for Your photo.
-    if (modelImage && !shopperImage) {
-      let key;
-      try {
-        key = cacheKey(productImage, modelImage);
-      } catch {
-        return jsonError(res, 400, 'invalid_image_url');
-      }
-
-      const hit = readCached(key);
-      if (hit) {
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'hit', lookupOnly }));
-        return res.status(200).json({
-          imageUrl: cachePublicPath(key),
-          imageDataUrl: `data:${hit.contentType};base64,${hit.buffer.toString('base64')}`,
-          cached: true,
-        });
-      }
-
-      if (lookupOnly) {
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: true }));
-        return res.status(200).json({ cached: false });
-      }
-
-      console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: false }));
-    }
-
-    const garment = await fetchAndValidateRemoteImage(productImage, config.allowedCdnHosts);
-    let person;
-    if (shopperImage) {
-      person = await validateDataUrlImage(shopperImage);
-    } else {
-      person = await fetchAndValidateRemoteImage(modelImage, config.allowedCdnHosts);
-    }
-
-    const result = await runTryOn({
-      apiKey: config.fashnApiKey,
-      modelImage: person,
-      garmentImage: garment,
-      modelName: config.fashnModel,
-      mode: config.fashnMode,
-      timeoutMs: config.requestTimeoutMs,
+    const outcome = await runTryOnRequest({
+      body: req.body || {},
+      requestTimeoutMs: config.requestTimeoutMs,
+      fetchRemoteImage: (url) => fetchAndValidateRemoteImage(url, config.allowedCdnHosts),
+      validateShopperImage: validateDataUrlImage,
+      cacheKey,
+      readCached,
+      writeCached,
+      cachePublicPath,
+      downloadResultImage,
+      runTryOn: (step) => runTryOn({
+        apiKey: config.fashnApiKey,
+        modelImage: step.modelImage,
+        garmentImage: step.garmentImage,
+        category: step.category,
+        modelName: config.fashnModel,
+        mode: config.fashnMode,
+        timeoutMs: step.timeoutMs,
+      }),
     });
-
-    // Persist Virtual-model results locally so later visitors skip FASHN (and CDN expiry).
-    if (modelImage && !shopperImage) {
-      const key = cacheKey(productImage, modelImage);
-      const downloaded = await downloadResultImage(result.imageUrl);
-      writeCached(key, downloaded.buffer);
-      console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored' }));
-      return res.status(200).json({
-        imageUrl: result.imageUrl,
-        imageDataUrl: `data:${downloaded.contentType};base64,${downloaded.buffer.toString('base64')}`,
-        cached: false,
-      });
-    }
-
-    return res.status(200).json({ imageUrl: result.imageUrl });
+    return res.status(outcome.status).json(outcome.body);
   } catch (error) {
     const code = error?.message || 'tryon_failed';
     const status = error?.status === 401 || error?.status === 403 ? 502

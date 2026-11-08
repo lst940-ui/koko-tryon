@@ -5,29 +5,43 @@ Server-side Shopify app proxy for unpaid-theme try-on on **koko077.com / i13ur2-
 - Storefront path: `/apps/koko-tryon`
 - Frontend contract: `/workspace/koko-ai-1108-backend-contract.md`
 - Theme target once live: unpublished **KOKO Try-On AI 1108** (`147999195202`)
-- Provider: FASHN `tryon-v1.6` (1 credit / image). Key stays in `process.env.FASHN_API_KEY` only.
+- Provider: FASHN `tryon-v1.6` (1 credit / successful image, so an outfit set is about 2). Key stays in `process.env.FASHN_API_KEY` only.
 
 ## What this app does
 
-`POST /apps/koko-tryon` (via Shopify app proxy) accepts:
+`POST /apps/koko-tryon` (also `/` and `/apps/koko-tryon/`, via Shopify app proxy) accepts a top:
 
 ```json
 { "productImage": "https://cdn.shopify.com/...", "modelImage": "https://cdn.shopify.com/..." }
 ```
 
-or
+or Your photo:
 
 ```json
 { "productImage": "https://cdn.shopify.com/...", "shopperImage": "data:image/jpeg;base64,..." }
 ```
 
-It verifies the Shopify proxy signature, restricts the shop to `i13ur2-10.myshopify.com` / `koko077.com`, rate-limits, validates images (SSRF-safe CDN hosts for product/model; decoded shopper photos), calls FASHN server-side, polls until complete, and returns:
+Outfit sets (hoodie & joggers, tracksuit, two-piece) add `bottomImage`, an https Shopify CDN URL. Send the same URL as `productImage` when that color photo already shows both pieces:
 
 ```json
-{ "imageUrl": "https://cdn.fashn.ai/..." }
+{
+  "productImage": "https://cdn.shopify.com/.../set.jpg",
+  "bottomImage": "https://cdn.shopify.com/.../set.jpg",
+  "modelImage": "https://cdn.shopify.com/.../model.jpg"
+}
 ```
 
-No API key is ever returned to the theme.
+Omit `bottomImage` for T-shirts, shirts, polos, and single hoodies. Your photo accepts `bottomImage` the same way. `lookupOnly: true` is virtual-model only; the cache key includes the bottom image when present, so a top-only entry is not reused for a set.
+
+No `bottomImage` is one FASHN run with `category: "tops"`. A `bottomImage` runs tops with `productImage`, then bottoms with `bottomImage`, using the first result as the person image. Each step uses `REQUEST_TIMEOUT_MS` (default 85s), so a set can take about 170s. One storefront POST still counts as one rate-limit request. If bottoms fail after a successful top, the top image is returned and that partial result is not cached.
+
+It verifies the Shopify proxy signature, restricts the shop to `i13ur2-10.myshopify.com` / `koko077.com`, rate-limits, validates images (SSRF-safe CDN hosts for product/model/bottom; decoded shopper photos), calls FASHN server-side, polls until complete, and returns:
+
+```json
+{ "imageUrl": "https://cdn.fashn.ai/...", "imageDataUrl": "data:image/jpeg;base64,...", "cached": false }
+```
+
+Virtual-model cache hits use the same `imageUrl` + `imageDataUrl` shape (`imageUrl` is the app cache path). Your photo returns `{ "imageUrl": "https://cdn.fashn.ai/..." }`. FASHN result hosts are not checked against the Shopify CDN allowlist. No API key is ever returned to the theme.
 
 ## Blocked without human Partner/Dev Dashboard steps
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   cacheKey,
@@ -34,6 +34,34 @@ test('cacheKey is stable across width params and sensitive to path', () => {
   assert.notEqual(a, c);
   assert.equal(isValidCacheKey(a), true);
   assert.equal(cachePublicPath(a), `/apps/koko-tryon/cache/${a}`);
+});
+
+test('cacheKey keeps the top-only digest and changes when a bottom image is set', () => {
+  const product = 'https://cdn.shopify.com/s/files/1/garment.jpg?width=1600';
+  const model = 'https://cdn.shopify.com/s/files/1/model.jpg';
+  const legacy = crypto.createHash('sha256').update(
+    'https://cdn.shopify.com/s/files/1/garment.jpg\nhttps://cdn.shopify.com/s/files/1/model.jpg'
+  ).digest('hex');
+  const topOnly = cacheKey(product, model);
+  assert.equal(topOnly, legacy);
+  assert.equal(cacheKey(product, model, ''), legacy);
+  assert.equal(cacheKey(product, model, '   '), legacy);
+  assert.equal(cacheKey(product, model, null), legacy);
+
+  const joggers = 'https://cdn.shopify.com/s/files/1/joggers.jpg?width=480';
+  const withBottom = cacheKey(product, model, joggers);
+  assert.notEqual(withBottom, topOnly);
+  assert.equal(
+    withBottom,
+    cacheKey(product, model, 'https://cdn.shopify.com/s/files/1/joggers.jpg?width=1600')
+  );
+  assert.notEqual(
+    withBottom,
+    cacheKey(product, model, 'https://cdn.shopify.com/s/files/1/other-joggers.jpg')
+  );
+  // Same color photo for both pieces is still an outfit, not the old top-only entry.
+  assert.notEqual(cacheKey(product, model, product), topOnly);
+  assert.throws(() => cacheKey(product, model, 'http://cdn.shopify.com/joggers.jpg'));
 });
 
 test('read/write hit and miss without FASHN', () => {
