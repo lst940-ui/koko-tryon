@@ -4,10 +4,21 @@ import { verifyAppProxyRequest, isAllowedShop } from './proxy-auth.js';
 import { createRateLimiter } from './rate-limit.js';
 import { fetchAndValidateRemoteImage, validateDataUrlImage } from './images.js';
 import { runTryOn } from './fashn.js';
+import {
+  cacheKey,
+  cachePublicPath,
+  downloadResultImage,
+  ensureCacheDir,
+  isValidCacheKey,
+  readCached,
+  writeCached,
+} from './cache.js';
 
 const config = loadConfig();
 const app = express();
 const limiter = createRateLimiter({ limit: config.maxRequestsPerMinute });
+
+ensureCacheDir();
 
 app.disable('x-powered-by');
 app.use(express.json({
@@ -21,28 +32,56 @@ function clientKey(req) {
     .trim();
 }
 
-
 function jsonError(res, status, code) {
   return res.status(status).json({ error: code });
 }
 
+function authorizeProxy(req, res) {
+  if (!config.shopifyApiSecret) {
+    jsonError(res, 503, 'proxy_not_configured');
+    return null;
+  }
+  const auth = verifyAppProxyRequest(req, config.shopifyApiSecret);
+  if (!auth.ok) {
+    console.log(JSON.stringify({
+      event: 'proxy_auth_failed',
+      reason: auth.reason,
+      hasSignature: Object.prototype.hasOwnProperty.call(req.query || {}, 'signature'),
+      queryKeys: Object.keys(req.query || {}).sort(),
+      originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
+    }));
+    res.status(401).json({ error: 'invalid_proxy_signature', reason: auth.reason });
+    return null;
+  }
+  if (!isAllowedShop(auth.shop, config.allowedShops)) {
+    jsonError(res, 403, 'shop_not_allowed');
+    return null;
+  }
+  return auth;
+}
+
+async function handleCacheGet(req, res) {
+  try {
+    if (!authorizeProxy(req, res)) return;
+    const key = String(req.params.key || '');
+    if (!isValidCacheKey(key)) return jsonError(res, 404, 'not_found');
+    const hit = readCached(key);
+    if (!hit) return jsonError(res, 404, 'not_found');
+    res.set({
+      'Content-Type': hit.contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.status(200).send(hit.buffer);
+  } catch {
+    return jsonError(res, 500, 'cache_read_failed');
+  }
+}
+
 async function handleTryOn(req, res) {
   try {
-    if (!config.shopifyApiSecret) return jsonError(res, 503, 'proxy_not_configured');
+    if (!authorizeProxy(req, res)) return;
     if (!config.fashnApiKey) return jsonError(res, 503, 'fashn_not_configured');
-
-    const auth = verifyAppProxyRequest(req, config.shopifyApiSecret);
-    if (!auth.ok) {
-      console.log(JSON.stringify({
-        event: 'proxy_auth_failed',
-        reason: auth.reason,
-        hasSignature: Object.prototype.hasOwnProperty.call(req.query || {}, 'signature'),
-        queryKeys: Object.keys(req.query || {}).sort(),
-        originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
-      }));
-      return res.status(401).json({ error: 'invalid_proxy_signature', reason: auth.reason });
-    }
-    if (!isAllowedShop(auth.shop, config.allowedShops)) return jsonError(res, 403, 'shop_not_allowed');
 
     const rate = limiter(clientKey(req));
     if (!rate.ok) {
@@ -54,9 +93,36 @@ async function handleTryOn(req, res) {
     const productImage = body.productImage;
     const modelImage = body.modelImage;
     const shopperImage = body.shopperImage;
+    const lookupOnly = body.lookupOnly === true;
+
     if (!productImage || typeof productImage !== 'string') return jsonError(res, 400, 'product_image_required');
     if (!modelImage && !shopperImage) return jsonError(res, 400, 'model_or_shopper_required');
     if (modelImage && shopperImage) return jsonError(res, 400, 'choose_one_person_image');
+    if (lookupOnly && shopperImage) return jsonError(res, 400, 'lookup_virtual_only');
+    if (lookupOnly && !modelImage) return jsonError(res, 400, 'lookup_virtual_only');
+
+    // Virtual-model cache: keyed by garment + fixed model URLs. Never used for Your photo.
+    if (modelImage && !shopperImage) {
+      let key;
+      try {
+        key = cacheKey(productImage, modelImage);
+      } catch {
+        return jsonError(res, 400, 'invalid_image_url');
+      }
+
+      const hit = readCached(key);
+      if (hit) {
+        console.log(JSON.stringify({ event: 'tryon_cache', result: 'hit', lookupOnly }));
+        return res.status(200).json({ imageUrl: cachePublicPath(key), cached: true });
+      }
+
+      if (lookupOnly) {
+        console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: true }));
+        return res.status(200).json({ cached: false });
+      }
+
+      console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: false }));
+    }
 
     const garment = await fetchAndValidateRemoteImage(productImage, config.allowedCdnHosts);
     let person;
@@ -74,6 +140,15 @@ async function handleTryOn(req, res) {
       mode: config.fashnMode,
       timeoutMs: config.requestTimeoutMs,
     });
+
+    // Persist Virtual-model results locally so later visitors skip FASHN (and CDN expiry).
+    if (modelImage && !shopperImage) {
+      const key = cacheKey(productImage, modelImage);
+      const downloaded = await downloadResultImage(result.imageUrl);
+      writeCached(key, downloaded.buffer);
+      console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored' }));
+      return res.status(200).json({ imageUrl: cachePublicPath(key), cached: false });
+    }
 
     return res.status(200).json({ imageUrl: result.imageUrl });
   } catch (error) {
@@ -100,13 +175,14 @@ app.get('/healthz', (_req, res) => {
   });
 });
 
+// Cache GET must be registered before the generic 405 / 404 catch-alls.
+app.get(['/apps/koko-tryon/cache/:key', '/cache/:key'], handleCacheGet);
+
 // Shopify app proxy forwards /apps/koko-tryon* to this path (relative or absolute).
 app.post(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], handleTryOn);
 app.all(['/apps/koko-tryon', '/apps/koko-tryon/'], (_req, res) => jsonError(res, 405, 'method_not_allowed'));
 
 app.get(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], (_req, res) => jsonError(res, 404, 'not_found'));
-
-
 
 app.use((_req, res) => jsonError(res, 404, 'not_found'));
 
