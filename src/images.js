@@ -49,11 +49,12 @@ export async function fetchAndValidateRemoteImage(url, allowedCdnHosts) {
   try {
     const response = await fetch(safe, {
       method: 'GET',
-      redirect: 'error',
+      redirect: 'follow',
       signal: controller.signal,
       headers: { Accept: 'image/*,*/*;q=0.8' },
     });
     if (!response.ok) throw new Error('image_fetch_failed');
+    if (response.url) assertSafePublicImageUrl(response.url, allowedCdnHosts);
     const type = String(response.headers.get('content-type') || '');
     if (!/^image\/(jpeg|png|webp)/i.test(type)) throw new Error('image_type_forbidden');
     const length = Number(response.headers.get('content-length') || 0);

@@ -113,7 +113,11 @@ async function handleTryOn(req, res) {
       const hit = readCached(key);
       if (hit) {
         console.log(JSON.stringify({ event: 'tryon_cache', result: 'hit', lookupOnly }));
-        return res.status(200).json({ imageUrl: cachePublicPath(key), cached: true });
+        return res.status(200).json({
+          imageUrl: cachePublicPath(key),
+          imageDataUrl: `data:${hit.contentType};base64,${hit.buffer.toString('base64')}`,
+          cached: true,
+        });
       }
 
       if (lookupOnly) {
@@ -147,7 +151,11 @@ async function handleTryOn(req, res) {
       const downloaded = await downloadResultImage(result.imageUrl);
       writeCached(key, downloaded.buffer);
       console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored' }));
-      return res.status(200).json({ imageUrl: cachePublicPath(key), cached: false });
+      return res.status(200).json({
+        imageUrl: result.imageUrl,
+        imageDataUrl: `data:${downloaded.contentType};base64,${downloaded.buffer.toString('base64')}`,
+        cached: false,
+      });
     }
 
     return res.status(200).json({ imageUrl: result.imageUrl });
@@ -159,6 +167,7 @@ async function handleTryOn(req, res) {
       : code.includes('timeout') ? 504
       : 502;
     // Never include provider payloads, API keys, or shopper image data.
+    console.log(JSON.stringify({ event: 'tryon_failed', code }));
     return jsonError(res, status, code);
   }
 }
