@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import express from 'express';
 import { loadConfig } from './config.js';
 import { verifyAppProxyRequest, isAllowedShop } from './proxy-auth.js';
@@ -22,64 +21,6 @@ function clientKey(req) {
     .trim();
 }
 
-
-function sameDigest(left, right) {
-  const a = Buffer.from(String(left), 'utf8');
-  const b = Buffer.from(String(right), 'utf8');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function diagnoseProxySignature(req, secret) {
-  if (!secret) return { secretConfigured: false, matched: [] };
-  let parsed;
-  try {
-    parsed = new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`, 'https://example.invalid');
-  } catch {
-    return { secretConfigured: true, secretLength: secret.length, secretHasWhitespace: /\s/.test(secret), matched: [] };
-  }
-  const signature = parsed.searchParams.get('signature') || '';
-  const grouped = new Map();
-  for (const [key, value] of parsed.searchParams.entries()) {
-    if (key === 'signature') continue;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(value);
-  }
-  const decodedNoSep = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => `${key}=${values.join(',')}`).join('');
-  const decodedAmp = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => `${key}=${values.join(',')}`).join('&');
-  const rawPairs = parsed.search.slice(1).split('&').filter((part) => part && !part.startsWith('signature='));
-  const rawNoSep = [...rawPairs].sort().join('');
-  const rawAmp = [...rawPairs].sort().join('&');
-  const rawDecodedNoSep = rawPairs.map((part) => {
-    try { return decodeURIComponent(part); } catch { return part; }
-  }).sort().join('');
-  const secrets = { full: secret };
-  const prefixAt = secret.indexOf('_');
-  if (prefixAt > 0 && prefixAt < secret.length - 1) {
-    secrets.after_prefix = secret.slice(prefixAt + 1);
-  }
-  const messages = {
-    decoded_nosep: decodedNoSep,
-    decoded_amp: decodedAmp,
-    raw_nosep: rawNoSep,
-    raw_amp: rawAmp,
-    raw_decoded_nosep: rawDecodedNoSep,
-  };
-  const matched = [];
-  for (const [secretName, secretValue] of Object.entries(secrets)) {
-    for (const [messageName, message] of Object.entries(messages)) {
-      const hex = crypto.createHmac('sha256', secretValue).update(message).digest('hex');
-      const b64 = crypto.createHmac('sha256', secretValue).update(message).digest('base64');
-      if (signature && sameDigest(hex, signature)) matched.push(`${secretName}+${messageName}`);
-      if (signature && sameDigest(b64, signature)) matched.push(`${secretName}+${messageName}+b64`);
-    }
-  }
-  return {
-    secretConfigured: true,
-    secretLength: secret.length,
-    secretHasWhitespace: /\s/.test(secret),
-    matched,
-  };
-}
 
 function jsonError(res, status, code) {
   return res.status(status).json({ error: code });
@@ -163,16 +104,7 @@ app.get('/healthz', (_req, res) => {
 app.post(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], handleTryOn);
 app.all(['/apps/koko-tryon', '/apps/koko-tryon/'], (_req, res) => jsonError(res, 405, 'method_not_allowed'));
 
-app.get(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], (req, res) => {
-  res.status(404).json({
-    error: 'not_found',
-    hasSignature: Object.prototype.hasOwnProperty.call(req.query || {}, 'signature'),
-    queryKeys: Object.keys(req.query || {}).sort(),
-    originalUrlHasQuery: String(req.originalUrl || '').includes('?'),
-    ...diagnoseProxySignature(req, config.shopifyApiSecret),
-    fashnKeyLength: (config.fashnApiKey || '').length,
-  });
-});
+app.get(['/apps/koko-tryon', '/apps/koko-tryon/', '/'], (_req, res) => jsonError(res, 404, 'not_found'));
 
 
 
