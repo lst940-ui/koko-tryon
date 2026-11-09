@@ -4,6 +4,7 @@ import { verifyAppProxyRequest, isAllowedShop } from './proxy-auth.js';
 import { createRateLimiter } from './rate-limit.js';
 import { fetchAndValidateRemoteImage, validateDataUrlImage } from './images.js';
 import { runTryOn } from './fashn.js';
+import { buildTryOnUsageLog, logTryOnUsage } from './usage-log.js';
 import {
   cacheKey,
   cachePublicPath,
@@ -118,7 +119,14 @@ async function handleTryOn(req, res) {
 
       const hit = readCached(key);
       if (hit) {
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'hit', lookupOnly }));
+        logTryOnUsage(buildTryOnUsageLog({
+          result: 'hit',
+          lookupOnly,
+          productImage,
+          bottomImage: outfitBottom,
+          shopperImage,
+          body,
+        }));
         return res.status(200).json({
           imageUrl: cachePublicPath(key),
           imageDataUrl: `data:${hit.contentType};base64,${hit.buffer.toString('base64')}`,
@@ -127,11 +135,25 @@ async function handleTryOn(req, res) {
       }
 
       if (lookupOnly) {
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: true }));
+        logTryOnUsage(buildTryOnUsageLog({
+          result: 'miss',
+          lookupOnly: true,
+          productImage,
+          bottomImage: outfitBottom,
+          shopperImage,
+          body,
+        }));
         return res.status(200).json({ cached: false });
       }
 
-      console.log(JSON.stringify({ event: 'tryon_cache', result: 'miss', lookupOnly: false }));
+      logTryOnUsage(buildTryOnUsageLog({
+        result: 'miss',
+        lookupOnly: false,
+        productImage,
+        bottomImage: outfitBottom,
+        shopperImage,
+        body,
+      }));
     }
 
     const garment = await fetchAndValidateRemoteImage(productImage, config.allowedCdnHosts);
@@ -174,8 +196,14 @@ async function handleTryOn(req, res) {
         });
         outfitComplete = true;
       } catch (error) {
-        console.log(JSON.stringify({
+        logTryOnUsage(buildTryOnUsageLog({
           event: 'tryon_bottoms_failed',
+          result: 'failed',
+          lookupOnly: false,
+          productImage,
+          bottomImage: outfitBottom,
+          shopperImage,
+          body,
           code: error?.message || 'bottoms_failed',
         }));
         result = resultTops;
@@ -190,9 +218,23 @@ async function handleTryOn(req, res) {
       if (outfitComplete) {
         const key = cacheKey(productImage, modelImage, outfitBottom);
         writeCached(key, downloaded.buffer);
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'stored', outfit: Boolean(outfitBottom) }));
+        logTryOnUsage(buildTryOnUsageLog({
+          result: 'stored',
+          lookupOnly: false,
+          productImage,
+          bottomImage: outfitBottom,
+          shopperImage,
+          body,
+        }));
       } else {
-        console.log(JSON.stringify({ event: 'tryon_cache', result: 'skipped_incomplete_outfit' }));
+        logTryOnUsage(buildTryOnUsageLog({
+          result: 'skipped_incomplete_outfit',
+          lookupOnly: false,
+          productImage,
+          bottomImage: outfitBottom,
+          shopperImage,
+          body,
+        }));
       }
       return res.status(200).json({
         imageUrl: result.imageUrl,
@@ -210,7 +252,16 @@ async function handleTryOn(req, res) {
       : code.includes('timeout') ? 504
       : 502;
     // Never include provider payloads, API keys, or shopper image data.
-    console.log(JSON.stringify({ event: 'tryon_failed', code }));
+    logTryOnUsage(buildTryOnUsageLog({
+      event: 'tryon_failed',
+      result: 'failed',
+      lookupOnly: body?.lookupOnly === true,
+      productImage: body?.productImage,
+      bottomImage: body?.bottomImage,
+      shopperImage: body?.shopperImage,
+      body,
+      code,
+    }));
     return jsonError(res, status, code);
   }
 }
